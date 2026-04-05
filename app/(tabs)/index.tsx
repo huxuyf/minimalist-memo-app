@@ -12,6 +12,7 @@ import {
 import { ScreenContainer } from '@/components/screen-container';
 import { useRouter } from 'expo-router';
 import { fetchAllMemos, createAndSyncMemo, deleteMemoRecord } from '@/lib/db/repository';
+import { searchMemos, rankSearchResults } from '@/lib/db/search';
 import { Memo } from '@/lib/db/types';
 
 export default function HomeScreen() {
@@ -21,6 +22,8 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [displayMemos, setDisplayMemos] = useState<Memo[]>([]);
 
   // 加载备忘录列表
   const loadMemos = useCallback(async () => {
@@ -38,6 +41,17 @@ export default function HomeScreen() {
   useEffect(() => {
     loadMemos();
   }, [loadMemos]);
+
+  // 搜索备忘录
+  useEffect(() => {
+    if (searchQuery.trim().length === 0) {
+      setDisplayMemos(memos);
+    } else {
+      const searchResults = searchMemos(memos, searchQuery);
+      const rankedResults = rankSearchResults(searchResults, searchQuery);
+      setDisplayMemos(rankedResults);
+    }
+  }, [searchQuery, memos]);
 
   // 发送新备忘录
   const handleSend = async () => {
@@ -61,6 +75,9 @@ export default function HomeScreen() {
       // 清空输入框
       setInputText('');
       
+      // 清空搜索框
+      setSearchQuery('');
+      
       // 显示提示
       if (result.syncSuccess) {
         Alert.alert('成功', '已保存并同步');
@@ -73,27 +90,6 @@ export default function HomeScreen() {
     } finally {
       setSending(false);
     }
-  };
-
-  // 删除备忘录
-  const handleDelete = (id: number) => {
-    Alert.alert('确认删除', '确认删除此记录？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '删除',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await deleteMemoRecord(id);
-            await loadMemos();
-            Alert.alert('成功', '记录已删除');
-          } catch (error) {
-            console.error('Failed to delete memo:', error);
-            Alert.alert('错误', '删除失败');
-          }
-        },
-      },
-    ]);
   };
 
   // 编辑备忘录
@@ -111,15 +107,40 @@ export default function HomeScreen() {
   // 长按菜单
   const handleLongPress = (memo: Memo) => {
     Alert.alert('操作', '选择操作', [
-      { text: '取消', style: 'cancel' },
       {
         text: '编辑',
         onPress: () => handleEdit(memo),
       },
       {
         text: '删除',
+        onPress: () => {
+          Alert.alert('确认删除', '确定要删除这条记录吗？', [
+            {
+              text: '取消',
+              onPress: () => {},
+              style: 'cancel',
+            },
+            {
+              text: '删除',
+              onPress: async () => {
+                try {
+                  await deleteMemoRecord(memo.id);
+                  await loadMemos();
+                  Alert.alert('成功', '已删除');
+                } catch (error) {
+                  Alert.alert('错误', '删除失败');
+                }
+              },
+              style: 'destructive',
+            },
+          ]);
+        },
         style: 'destructive',
-        onPress: () => handleDelete(memo.id),
+      },
+      {
+        text: '取消',
+        onPress: () => {},
+        style: 'cancel',
       },
     ]);
   };
@@ -127,19 +148,19 @@ export default function HomeScreen() {
   // 渲染列表项
   const renderMemoItem = ({ item }: { item: Memo }) => {
     const isExpanded = expandedId === item.id;
-    
+
     return (
       <TouchableOpacity
         onPress={() => setExpandedId(isExpanded ? null : item.id)}
         onLongPress={() => handleLongPress(item)}
-        className="border-b border-border px-4 py-3 active:bg-surface"
+        className="px-4 py-3 border-b border-border active:opacity-70"
       >
-        <Text className="text-foreground font-semibold text-base" numberOfLines={1}>
+        <Text className="text-lg font-semibold text-foreground">
           {item.title}
         </Text>
         
         {isExpanded && item.content && (
-          <Text className="text-foreground text-sm mt-2 leading-relaxed">
+          <Text className="text-muted text-sm mt-2 leading-relaxed">
             {item.content}
           </Text>
         )}
@@ -179,18 +200,46 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* 搜索框 */}
+        <View className="px-4 py-3 border-b border-border bg-surface">
+          <View className="flex-row items-center bg-background border border-border rounded-lg px-3 py-2">
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="搜索笔记..."
+              placeholderTextColor="#9BA1A6"
+              className="flex-1 text-foreground"
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setSearchQuery('')}
+                className="p-1 active:opacity-70"
+              >
+                <Text className="text-muted text-lg">✕</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          {searchQuery.length > 0 && (
+            <Text className="text-muted text-xs mt-2">
+              找到 {displayMemos.length} 条记录
+            </Text>
+          )}
+        </View>
+
         {/* 列表区域 */}
         {loading ? (
           <View className="flex-1 justify-center items-center">
             <ActivityIndicator size="large" color="#3B82F6" />
           </View>
-        ) : memos.length === 0 ? (
+        ) : displayMemos.length === 0 ? (
           <View className="flex-1 justify-center items-center">
-            <Text className="text-muted text-base">暂无记录，开始输入吧</Text>
+            <Text className="text-muted text-base">
+              {searchQuery.length > 0 ? '未找到匹配的记录' : '暂无记录，开始输入吧'}
+            </Text>
           </View>
         ) : (
           <FlatList
-            data={memos}
+            data={displayMemos}
             renderItem={renderMemoItem}
             keyExtractor={(item) => item.id.toString()}
             scrollEnabled={true}
@@ -207,22 +256,17 @@ export default function HomeScreen() {
               placeholder="输入内容..."
               placeholderTextColor="#9BA1A6"
               multiline
-              maxLength={5000}
-              className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-foreground"
-              editable={!sending}
+              numberOfLines={3}
+              className="flex-1 text-foreground bg-surface border border-border rounded-lg p-3"
             />
             <TouchableOpacity
               onPress={handleSend}
               disabled={sending}
-              className={`px-4 py-2 rounded-lg justify-center items-center ${
-                sending ? 'bg-primary opacity-50' : 'bg-primary active:opacity-80'
-              }`}
+              className="bg-primary px-4 py-3 rounded-lg justify-center active:opacity-80"
             >
-              {sending ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Text className="text-white font-semibold">发送</Text>
-              )}
+              <Text className="text-background font-semibold text-center">
+                {sending ? '发送中...' : '发送'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
